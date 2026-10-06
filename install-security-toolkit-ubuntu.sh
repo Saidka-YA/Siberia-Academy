@@ -32,16 +32,23 @@ apt-get -o APT::Update::Error-Mode=any update
 echo 'wireshark-common wireshark-common/install-setuid boolean true' | debconf-set-selections
 echo 'ubridge ubridge/install-setuid boolean true' | debconf-set-selections
 PACKAGES=(libimage-exiftool-perl xxd binwalk grep unzip zip qpdf binutils
-  sleuthkit testdisk wireshark tshark tcpdump traceroute dnsutils
+  sleuthkit testdisk wireshark tshark tcpdump traceroute bind9-dnsutils
   xterm inetutils-telnet inetutils-ftp
   netcat-openbsd iptables python3 python3-pip python3-venv python3-dev
   file tar coreutils htop btop debianutils openssh-client nmap git
   build-essential g++ gdb cmake pkg-config clang clangd clang-format
   clang-tidy cppcheck cron firefox)
+MISSING_PACKAGES=()
 for pkg in "${PACKAGES[@]}"; do
   candidate="$(LC_ALL=C apt-cache policy "$pkg" | awk '/Candidate:/ {print $2}')"
-  [[ -n $candidate && $candidate != '(none)' ]] || die "No installation candidate for $pkg. Check Ubuntu sources, universe and apt update errors"
+  if [[ -z $candidate || $candidate == '(none)' ]]; then
+    MISSING_PACKAGES+=("$pkg")
+  fi
 done
+if (( ${#MISSING_PACKAGES[@]} )); then
+  LC_ALL=C apt-cache policy "${MISSING_PACKAGES[@]}"
+  die "No installation candidates on Ubuntu ${VERSION_ID} (${ARCH}): ${MISSING_PACKAGES[*]}. Check package names and enabled repositories"
+fi
 apt-get install "${APT[@]}" "${PACKAGES[@]}"
 # base64 and wc = coreutils; which = debianutils; nc = netcat-openbsd; ssh = openssh-client.
 
