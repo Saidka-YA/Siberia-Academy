@@ -33,6 +33,7 @@ echo 'wireshark-common wireshark-common/install-setuid boolean true' | debconf-s
 echo 'ubridge ubridge/install-setuid boolean true' | debconf-set-selections
 PACKAGES=(libimage-exiftool-perl xxd binwalk grep unzip zip qpdf binutils
   sleuthkit testdisk wireshark tshark tcpdump traceroute dnsutils
+  xterm inetutils ubridge vpcs
   netcat-openbsd iptables python3 python3-pip python3-venv python3-dev
   file tar coreutils htop btop debianutils openssh-client nmap git
   build-essential g++ gdb cmake pkg-config clang clangd clang-format
@@ -291,7 +292,7 @@ EOF
 chmod 0755 /usr/local/sbin/foxyproxy-burp
 
 log 'Verification'
-for cmd in docker code firefox python3 go g++ gdb clangd clang-format clang-tidy cppcheck ruff vol exiftool xxd binwalk qpdf tshark tcpdump gns3 postman burpsuite file tar zip unzip base64 htop btop which wc nc ssh curl nmap; do
+for cmd in docker code firefox python3 go g++ gdb clangd clang-format clang-tidy cppcheck ruff vol exiftool xxd binwalk qpdf tshark tcpdump xterm ubridge vpcs gns3 postman burpsuite file tar zip unzip base64 htop btop which wc nc ssh curl nmap; do
   if command -v "$cmd" >/dev/null 2>&1; then printf '  [OK] %-14s %s\n' "$cmd" "$(command -v "$cmd")"; else printf '  [MISSING] %s\n' "$cmd"; fi
 done
 printf '\nDocker: sudo docker info. Health check: sudo /usr/local/sbin/docker-healthcheck. Logs: journalctl -t docker-healthcheck\n'
