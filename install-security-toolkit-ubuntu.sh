@@ -25,21 +25,22 @@ export DEBIAN_FRONTEND=noninteractive
 APT=(-y -o DPkg::Lock::Timeout=120)
 
 log 'Updating Ubuntu repositories'
-apt-get update
+apt-get -o APT::Update::Error-Mode=any update
 apt-get install "${APT[@]}" ca-certificates curl gnupg software-properties-common
 add-apt-repository -y universe
-apt-get update
+apt-get -o APT::Update::Error-Mode=any update
 echo 'wireshark-common wireshark-common/install-setuid boolean true' | debconf-set-selections
 echo 'ubridge ubridge/install-setuid boolean true' | debconf-set-selections
 PACKAGES=(libimage-exiftool-perl xxd binwalk grep unzip zip qpdf binutils
   sleuthkit testdisk wireshark tshark tcpdump traceroute dnsutils
-  xterm inetutils ubridge vpcs
+  xterm inetutils-telnet inetutils-ftp
   netcat-openbsd iptables python3 python3-pip python3-venv python3-dev
   file tar coreutils htop btop debianutils openssh-client nmap git
   build-essential g++ gdb cmake pkg-config clang clangd clang-format
   clang-tidy cppcheck cron firefox)
 for pkg in "${PACKAGES[@]}"; do
-  apt-cache show "$pkg" >/dev/null 2>&1 || die "Unavailable package: $pkg"
+  candidate="$(LC_ALL=C apt-cache policy "$pkg" | awk '/Candidate:/ {print $2}')"
+  [[ -n $candidate && $candidate != '(none)' ]] || die "No installation candidate for $pkg. Check Ubuntu sources, universe and apt update errors"
 done
 apt-get install "${APT[@]}" "${PACKAGES[@]}"
 # base64 and wc = coreutils; which = debianutils; nc = netcat-openbsd; ssh = openssh-client.
@@ -67,7 +68,7 @@ Components: stable
 Architectures: $ARCH
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
-apt-get update
+apt-get -o APT::Update::Error-Mode=any update
 apt-get install "${APT[@]}" docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker
 timeout 20 docker info >/dev/null || die 'Docker daemon did not respond'
@@ -108,13 +109,13 @@ Components: main
 Architectures: amd64 arm64 armhf
 Signed-By: /usr/share/keyrings/microsoft.gpg
 EOF
-apt-get update
+apt-get -o APT::Update::Error-Mode=any update
 apt-get install "${APT[@]}" code
 
 log 'Installing GNS3 from official PPA'
-if add-apt-repository -y ppa:gns3/ppa && apt-get update; then
+if add-apt-repository -y ppa:gns3/ppa && apt-get -o APT::Update::Error-Mode=any update; then
   if apt-cache show gns3-gui >/dev/null 2>&1 && apt-cache show gns3-server >/dev/null 2>&1; then
-    apt-get install "${APT[@]}" gns3-gui gns3-server || warn 'GNS3 install failed; check PPA release support'
+    apt-get install "${APT[@]}" gns3-gui gns3-server ubridge vpcs || warn 'GNS3 install failed; check PPA release support'
   else warn 'GNS3 PPA has no packages for this Ubuntu release'; fi
 else warn 'GNS3 PPA could not be added or updated'; fi
 for group in wireshark ubridge libvirt kvm; do
@@ -230,66 +231,50 @@ for executable in /opt/BurpSuite/BurpSuite /opt/BurpSuite/BurpSuiteCommunity /op
   if [[ -x $executable ]]; then ln -sfn "$executable" /usr/local/bin/burpsuite; break; fi
 done
 
-log 'Installing FoxyProxy Standard in Firefox and configuring Burp proxy'
-install -m 0755 -d /etc/firefox/policies
-python3 - /etc/firefox/policies/policies.json <<'PY'
-import json
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-if path.exists():
-    config = json.loads(path.read_text(encoding='utf-8'))
-else:
-    config = {}
-policies = config.setdefault('policies', {})
-policies.setdefault('ExtensionSettings', {})['foxyproxy@eric.h.jung'] = {
-    'installation_mode': 'normal_installed',
-    'install_url': 'https://addons.mozilla.org/firefox/downloads/latest/foxyproxy@eric.h.jung/latest.xpi',
-}
-extensions = policies.setdefault('3rdparty', {}).setdefault('Extensions', {})
-extensions['foxyproxy@eric.h.jung'] = {
-    'mode': '127.0.0.1:8080',
-    'data': [{
-        'active': True,
-        'title': 'Burp Suite',
-        'type': 'http',
-        'hostname': '127.0.0.1',
-        'port': '8080',
-        'username': '',
-        'password': '',
-        'cc': '',
-        'city': '',
-        'color': '#ff6633',
-        'pac': '',
-        'pacString': '',
-        'proxyDNS': True,
-        'include': [],
-        'exclude': [],
-        'tabProxy': [],
-    }],
-}
-path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
-PY
-chmod 0644 /etc/firefox/policies/policies.json
-cat > /usr/local/sbin/foxyproxy-burp <<'EOF'
+log 'Removing obsolete managed FoxyProxy settings'
+cat > /usr/local/sbin/foxyproxy-burp <<'FOXY_REPAIR'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-(( EUID == 0 )) || { echo 'Run with sudo' >&2; exit 1; }
-case "${1:-}" in on) mode='127.0.0.1:8080';; off) mode='disable';; *)
-  echo 'Usage: sudo foxyproxy-burp on|off' >&2; exit 2;; esac
-python3 - /etc/firefox/policies/policies.json "$mode" <<'PY'
+# Removes only the FoxyProxy policies created by the old toolkit installer.
+(( EUID == 0 )) || { echo "Run with sudo: sudo bash $0" >&2; exit 1; }
+case "${1:-unlock}" in
+  off|unlock) ;;
+  *) echo 'Use off or unlock. Enable Burp manually in the FoxyProxy menu.' >&2; exit 2;;
+esac
+python3 - <<'PY'
+import datetime
 import json
 import pathlib
-import sys
-path = pathlib.Path(sys.argv[1])
-config = json.loads(path.read_text(encoding='utf-8'))
-config['policies']['3rdparty']['Extensions']['foxyproxy@eric.h.jung']['mode'] = sys.argv[2]
-path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+import shutil
+
+path = pathlib.Path('/etc/firefox/policies/policies.json')
+extension = 'foxyproxy@eric.h.jung'
+if path.exists():
+    config = json.loads(path.read_text(encoding='utf-8'))
+    policies = config.get('policies', {})
+    changed = False
+    for section in (policies.get('ExtensionSettings', {}),
+                    policies.get('3rdparty', {}).get('Extensions', {})):
+        if extension in section:
+            del section[extension]
+            changed = True
+    if changed:
+        backup = path.with_name(path.name + '.backup-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
+        shutil.copy2(path, backup)
+        path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+        print(f'FoxyProxy policies removed. Backup: {backup}')
+    else:
+        print('No toolkit FoxyProxy policies found.')
+else:
+    print('No toolkit Firefox policy file found.')
 PY
-echo 'Restart Firefox to apply the change.'
-EOF
+echo 'Completely quit and restart Firefox, then disable FoxyProxy in about:addons'
+echo 'or select Disable in its menu. Managed settings are no longer imposed.'
+FOXY_REPAIR
 chmod 0755 /usr/local/sbin/foxyproxy-burp
+/usr/local/sbin/foxyproxy-burp unlock
+printf 'Install FoxyProxy manually if needed: https://addons.mozilla.org/firefox/addon/foxyproxy-standard/\n'
+printf 'Add an HTTP proxy 127.0.0.1:8080 in FoxyProxy; enable it only during Burp exercises.\n'
 
 log 'Verification'
 for cmd in docker code firefox python3 go g++ gdb clangd clang-format clang-tidy cppcheck ruff vol exiftool xxd binwalk qpdf tshark tcpdump xterm ubridge vpcs gns3 postman burpsuite file tar zip unzip base64 htop btop which wc nc ssh curl nmap; do
@@ -297,5 +282,5 @@ for cmd in docker code firefox python3 go g++ gdb clangd clang-format clang-tidy
 done
 printf '\nDocker: sudo docker info. Health check: sudo /usr/local/sbin/docker-healthcheck. Logs: journalctl -t docker-healthcheck\n'
 printf 'Log out and back in for Go PATH and Wireshark/GNS3 groups.\n'
-printf 'Firefox: restart it for FoxyProxy policy. Start Burp before browsing; proxy 127.0.0.1:8080.\n'
-printf 'Toggle: sudo foxyproxy-burp on|off, then restart Firefox. HTTPS needs Burp CA certificate in Firefox.\n'
+printf 'Firefox: restart, then disable FoxyProxy until you need Burp.\n'
+printf 'Toggle the proxy in the FoxyProxy menu. HTTPS interception needs the Burp CA certificate.\n'

@@ -164,47 +164,50 @@ done
 rm -f "$BURP_INSTALLER"
 trap - EXIT
 
-log 'Configuring FoxyProxy for Burp in Firefox'
-install -m 0755 -d /etc/firefox/policies
-python3 - /etc/firefox/policies/policies.json <<'PY'
-import json
-import pathlib
-import sys
-path = pathlib.Path(sys.argv[1])
-config = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
-policies = config.setdefault('policies', {})
-policies.setdefault('ExtensionSettings', {})['foxyproxy@eric.h.jung'] = {
-    'installation_mode': 'normal_installed',
-    'install_url': 'https://addons.mozilla.org/firefox/downloads/latest/foxyproxy@eric.h.jung/latest.xpi',
-}
-policies.setdefault('3rdparty', {}).setdefault('Extensions', {})['foxyproxy@eric.h.jung'] = {
-    'mode': '127.0.0.1:8080',
-    'data': [{'active': True, 'title': 'Burp Suite', 'type': 'http',
-              'hostname': '127.0.0.1', 'port': 8080, 'username': '', 'password': '',
-              'cc': '', 'city': '', 'color': '#ff6633', 'pac': '', 'pacString': '',
-              'proxyDNS': True, 'include': [], 'exclude': [], 'tabProxy': []}],
-}
-path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
-PY
-chmod 0644 /etc/firefox/policies/policies.json
-cat > /usr/local/sbin/foxyproxy-burp <<'EOF'
+log 'Removing obsolete managed FoxyProxy settings'
+cat > /usr/local/sbin/foxyproxy-burp <<'FOXY_REPAIR'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-(( EUID == 0 )) || { echo 'Run with sudo' >&2; exit 1; }
-case "${1:-}" in on) mode='127.0.0.1:8080';; off) mode='disable';; *)
-  echo 'Usage: sudo foxyproxy-burp on|off' >&2; exit 2;; esac
-python3 - /etc/firefox/policies/policies.json "$mode" <<'PY'
+# Removes only the FoxyProxy policies created by the old toolkit installer.
+(( EUID == 0 )) || { echo "Run with sudo: sudo bash $0" >&2; exit 1; }
+case "${1:-unlock}" in
+  off|unlock) ;;
+  *) echo 'Use off or unlock. Enable Burp manually in the FoxyProxy menu.' >&2; exit 2;;
+esac
+python3 - <<'PY'
+import datetime
 import json
 import pathlib
-import sys
-path = pathlib.Path(sys.argv[1])
-config = json.loads(path.read_text(encoding='utf-8'))
-config['policies']['3rdparty']['Extensions']['foxyproxy@eric.h.jung']['mode'] = sys.argv[2]
-path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+import shutil
+
+path = pathlib.Path('/etc/firefox/policies/policies.json')
+extension = 'foxyproxy@eric.h.jung'
+if path.exists():
+    config = json.loads(path.read_text(encoding='utf-8'))
+    policies = config.get('policies', {})
+    changed = False
+    for section in (policies.get('ExtensionSettings', {}),
+                    policies.get('3rdparty', {}).get('Extensions', {})):
+        if extension in section:
+            del section[extension]
+            changed = True
+    if changed:
+        backup = path.with_name(path.name + '.backup-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
+        shutil.copy2(path, backup)
+        path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+        print(f'FoxyProxy policies removed. Backup: {backup}')
+    else:
+        print('No toolkit FoxyProxy policies found.')
+else:
+    print('No toolkit Firefox policy file found.')
 PY
-echo 'Restart Firefox to apply the change.'
-EOF
+echo 'Completely quit and restart Firefox, then disable FoxyProxy in about:addons'
+echo 'or select Disable in its menu. Managed settings are no longer imposed.'
+FOXY_REPAIR
 chmod 0755 /usr/local/sbin/foxyproxy-burp
+/usr/local/sbin/foxyproxy-burp unlock
+printf 'Install FoxyProxy manually if needed: https://addons.mozilla.org/firefox/addon/foxyproxy-standard/\n'
+printf 'Add an HTTP proxy 127.0.0.1:8080 in FoxyProxy; enable it only during Burp exercises.\n'
 
 for group in wireshark ubridge libvirt kvm; do
   if getent group "$group" >/dev/null; then usermod -aG "$group" "$TARGET_USER"; fi
